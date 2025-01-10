@@ -1,80 +1,91 @@
-IMAGE_NAME = "debian/bullseye64"
-
 Vagrant.configure("2") do |config|
-  config.ssh.insert_key = false
+  # Zabbix Server VM
+  config.vm.define "zabbix_server" do |server|
+    server.vm.box = "debian/bullseye64"  # Stable Debian 11 (Bullseye)
+    server.vm.hostname = "zabbix-server"
 
-  config.vm.provider "virtualbox" do |zabbix|
-    zabbix.memory = 2048
-    zabbix.cpus = 2
+    # Network settings
+    server.vm.network "public_network"
+    server.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
+
+    # Resources
+    server.vm.provider "virtualbox" do |vb|
+      vb.memory = 2048
+      vb.cpus = 2
+    end
+
+    # Provisioning script for Zabbix Server
+    server.vm.provision "shell", inline: <<-SHELL
+      # Update the system
+      apt update
+
+      # Install necessary packages
+      apt install -y wget gnupg2 software-properties-common mariadb-server apache2
+
+      # Add Zabbix repository
+      wget https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_7.0-4+debian11_all.deb
+      dpkg -i zabbix-release_7.0-4+debian11_all.deb
+      apt update
+
+      # Install Zabbix packages
+      apt install -y zabbix-server-mysql zabbix-frontend-php zabbix-agent2
+
+      # Configure MariaDB for Zabbix
+      mysql -uroot -e "CREATE DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
+      mysql -uroot -e "CREATE USER 'zabbix'@'localhost' IDENTIFIED BY 'zabbix_password';"
+      mysql -uroot -e "GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';"
+      mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators = 1;"
+y
+      # Import Zabbix database schema
+      zcat /usr/share/doc/zabbix-server-mysql/create.sql.gz | mysql -uzabbix -p'zabbix_password' zabbix
+      mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators = 0;"
+
+      # Configure Zabbix server
+      sed -i 's/^# DBPassword=/DBPassword=zabbix_password/' /etc/zabbix/zabbix_server.conf
+
+      # Restart and enable services
+      systemctl restart zabbix-server zabbix-agent2 apache2
+      systemctl enable zabbix-server zabbix-agent2 apache2
+    SHELL
   end
 
-  config.vm.define "pozlerl" do |pozlerl|
-    pozlerl.vm.box = IMAGE_NAME
-    pozlerl.vm.network "forwarded_port", guest: 22, host: 2202
-    pozlerl.vm.network "forwarded_port", guest: 80, host: 8080
-    pozlerl.vm.hostname = "pozlerl"
+  # Zabbix Agent VM
+  config.vm.define "zabbix_agent" do |agent|
+    agent.vm.box = "debian/bullseye64"
+    agent.vm.hostname = "zabbix-agent"
+
+    # Network settings
+    agent.vm.network "public_network"
+
+    # Resources
+    agent.vm.provider "virtualbox" do |vb|
+      vb.memory = 512
+      vb.cpus = 1
+    end
+
+    # Provisioning script for Zabbix Agent
+    agent.vm.provision "shell", inline: <<-SHELL
+      # Update the system
+      apt update
+
+      # Install necessary packages
+      apt install -y wget gnupg2 software-properties-common
+
+      # Add Zabbix repository
+      wget https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_7.0-4+debian11_all.deb
+      dpkg -i zabbix-release_7.0-4+debian11_all.deb
+      apt update
+
+      # Install Zabbix Agent
+      apt install -y zabbix-agent2
+
+      # Configure Zabbix agent
+      sed -i 's/^# Server=127.0.0.1/Server=zabbix-server/' /etc/zabbix/zabbix_agent2.conf
+      sed -i 's/^# ServerActive=127.0.0.1/ServerActive=zabbix-server/' /etc/zabbix/zabbix_agent2.conf
+
+      # Restart and enable Zabbix Agent
+      systemctl restart zabbix-agent2
+      systemctl enable zabbix-agent2
+    SHELL
   end
-
-  config.vm.provision "shell", inline: <<-SHELL
-    # Aktualizace systému
-    sudo apt-get update
-    sudo apt-get upgrade -y
-
-    # Instalace základních nástrojů
-    sudo apt-get install -y wget curl vim gnupg2
-
-    # Instalace MariaDB (MySQL kompatibilní)
-    sudo apt-get install -y mariadb-server
-    sudo systemctl start mariadb
-    sudo systemctl enable mariadb
-
-    # Konfigurace databáze pro Zabbix
-    sudo mysql -e "DROP DATABASE IF EXISTS zabbix;"
-    sudo mysql -e "DROP USER IF EXISTS 'zabbix'@'localhost';"
-    sudo mysql -e "CREATE DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
-    sudo mysql -e "CREATE USER 'zabbix'@'localhost' IDENTIFIED BY 'zabbix_password';"
-    sudo mysql -e "GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';"
-    sudo mysql -e "SET GLOBAL log_bin_trust_function_creators = 1;"
-    sudo mysql -e "FLUSH PRIVILEGES;"
-
-    # Přidání Zabbix 7.0 LTS repository
-    wget https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_latest_7.0+debian11_all.deb
-    sudo dpkg -i zabbix-release_latest_7.0+debian11_all.deb
-    sudo apt-get update
-
-    # Instalace Zabbix serveru, frontend a agenta
-    sudo apt install -y zabbix-server-mysql zabbix-frontend-php zabbix-apache-conf zabbix-sql-scripts zabbix-agent2
-
-    # Import Zabbix databázové struktury
-    sudo zcat /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -pzabbix_password zabbix
-
-    # Disable log_bin_trust_function_creators option after importing database schema
-    sudo mysql -e "SET GLOBAL log_bin_trust_function_creators = 0;"
-
-    # Konfigurace Zabbix serveru
-    sudo sed -i 's/# DBPassword=/DBPassword=zabbix_password/' /etc/zabbix/zabbix_server.conf
-
-    # Instalace Apache, pokud není nainstalován
-    sudo apt-get install -y apache2
-
-    # Spuštění Apache, Zabbix serveru a agenta
-    sudo systemctl restart apache2
-    sudo systemctl restart zabbix-server
-    sudo systemctl restart zabbix-agent2
-
-    # Povolení služeb pro spuštění při startu
-    sudo systemctl enable apache2
-    sudo systemctl enable zabbix-server
-    sudo systemctl enable zabbix-agent2
-
-    # Konfigurace PHP pro Zabbix frontend
-    sudo sed -i 's/^max_execution_time = .*/max_execution_time = 300/' /etc/php/*/apache2/php.ini
-    sudo sed -i 's/^memory_limit = .*/memory_limit = 128M/' /etc/php/*/apache2/php.ini
-    sudo sed -i 's/^post_max_size = .*/post_max_size = 16M/' /etc/php/*/apache2/php.ini
-    sudo sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 2M/' /etc/php/*/apache2/php.ini
-    sudo sed -i 's/^;date.timezone =.*/date.timezone = Europe\\/Prague/' /etc/php/*/apache2/php.ini
-
-    # Restart Apache pro načtení změn
-    sudo systemctl restart apache2
-  SHELL
 end
