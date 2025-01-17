@@ -1,0 +1,91 @@
+Vagrant.configure("2") do |config|
+  # Zabbix Server VM
+  config.vm.define "zabbix_server" do |server|
+    server.vm.box = "debian/bullseye64"  # Stable Debian 11 (Bullseye)
+    server.vm.hostname = "zabbix-server"
+
+    # Network settings
+    server.vm.network "public_network"
+    server.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
+
+    # Resources
+    server.vm.provider "virtualbox" do |vb|
+      vb.memory = 2048
+      vb.cpus = 2
+    end
+
+    # Provisioning script for Zabbix Server
+    server.vm.provision "shell", inline: <<-SHELL
+      # Update the system
+      apt update
+
+      # Install necessary packages
+      apt install -y wget gnupg2 software-properties-common mariadb-server apache2
+
+      # Add Zabbix repository
+      wget https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_7.0-4+debian11_all.deb
+      dpkg -i zabbix-release_7.0-4+debian11_all.deb
+      apt update
+
+      # Install Zabbix packages
+      apt install -y zabbix-server-mysql zabbix-frontend-php zabbix-agent2
+
+      # Configure MariaDB for Zabbix
+      mysql -uroot -e "CREATE DATABASE zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;"
+      mysql -uroot -e "CREATE USER 'zabbix'@'localhost' IDENTIFIED BY 'zabbix_password';"
+      mysql -uroot -e "GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';"
+      mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators = 1;"
+y
+      # Import Zabbix database schema
+      zcat /usr/share/doc/zabbix-server-mysql/create.sql.gz | mysql -uzabbix -p'zabbix_password' zabbix
+      mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators = 0;"
+
+      # Configure Zabbix server
+      sed -i 's/^# DBPassword=/DBPassword=zabbix_password/' /etc/zabbix/zabbix_server.conf
+
+      # Restart and enable services
+      systemctl restart zabbix-server zabbix-agent2 apache2
+      systemctl enable zabbix-server zabbix-agent2 apache2
+    SHELL
+  end
+
+  # Zabbix Agent VM
+  config.vm.define "zabbix_agent" do |agent|
+    agent.vm.box = "debian/bullseye64"
+    agent.vm.hostname = "zabbix-agent"
+
+    # Network settings
+    agent.vm.network "public_network"
+
+    # Resources
+    agent.vm.provider "virtualbox" do |vb|
+      vb.memory = 512
+      vb.cpus = 1
+    end
+
+    # Provisioning script for Zabbix Agent
+    agent.vm.provision "shell", inline: <<-SHELL
+      # Update the system
+      apt update
+
+      # Install necessary packages
+      apt install -y wget gnupg2 software-properties-common
+
+      # Add Zabbix repository
+      wget https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_7.0-4+debian11_all.deb
+      dpkg -i zabbix-release_7.0-4+debian11_all.deb
+      apt update
+
+      # Install Zabbix Agent
+      apt install -y zabbix-agent2
+
+      # Configure Zabbix agent
+      sed -i 's/^# Server=127.0.0.1/Server=zabbix-server/' /etc/zabbix/zabbix_agent2.conf
+      sed -i 's/^# ServerActive=127.0.0.1/ServerActive=zabbix-server/' /etc/zabbix/zabbix_agent2.conf
+
+      # Restart and enable Zabbix Agent
+      systemctl restart zabbix-agent2
+      systemctl enable zabbix-agent2
+    SHELL
+  end
+end
